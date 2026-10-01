@@ -1,5 +1,9 @@
 # Serverless runtime dependencies (kept lean: no pandas/uvicorn/pytest).
-# Local development uses backend/requirements.txt instead.
+# Local development and Docker use backend/requirements.txt instead — which
+# additionally carries the PostgreSQL driver (psycopg). Serverless functions
+# have no database (AUTH_ENABLED=false demo), and the 16 MB driver would push
+# the function bundle past Vercel's 225 MB limit; DB.init() degrades cleanly
+# if DATABASE_URL is ever set without the driver.
 fastapi==0.142.2
 pydantic==2.10.4
 pydantic-settings==2.7.1
@@ -8,6 +12,5 @@ scikit-learn==1.6.0
 python-dotenv==1.0.1
 httpx==0.28.1
 SQLAlchemy==2.1.1
-psycopg[binary]==3.3.6
 PyJWT==2.15.1
 bcrypt==5.0.0
