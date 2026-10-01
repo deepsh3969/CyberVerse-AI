@@ -1,2 +1,25 @@
+# Project metadata for tooling (uv on Vercel, IDEs).
+# `dependencies` mirrors requirements.txt — keep both in sync.
+# Vercel's FastAPI preset installs these with uv during the install phase,
+# which also allows Vercel to optimize the function bundle size.
+
+[project]
+name = "cyberverse-ai"
+version = "1.0.0"
+description = "AI-powered 3D cybersecurity command center"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi==0.142.2",
+    "pydantic==2.10.4",
+    "pydantic-settings==2.7.1",
+    "numpy==2.2.1",
+    "scikit-learn==1.6.0",
+    "python-dotenv==1.0.1",
+    "httpx==0.28.1",
+    "SQLAlchemy==2.1.1",
+    "PyJWT==2.15.1",
+    "bcrypt==5.0.0",
+]
+
 [tool.vercel]
 entrypoint = "api.index:app"
