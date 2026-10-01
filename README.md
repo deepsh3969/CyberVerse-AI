@@ -258,11 +258,12 @@ API share a single origin — no `VITE_API_URL` and no CORS configuration:
 
 | Piece | Configuration |
 | --- | --- |
-| Frontend build | `vercel.json` → `installCommand` installs npm deps **and** `pip install -r requirements.txt`; `buildCommand` runs `npm run build --prefix frontend` into `frontend/dist` |
+| Frontend build | `vercel.json` → `buildCommand` = `npm install --prefix frontend && npm run build --prefix frontend` into `frontend/dist` |
+| Python dependencies | FastAPI framework preset auto-detects install: `uv` syncs `[project].dependencies` from `pyproject.toml` (mirrors `requirements.txt`); this keeps Vercel's function-bundle optimization active (225 MB limit) |
 | Python entrypoint | `pyproject.toml` → `tool.vercel.entrypoint = "api.index:app"` (wraps `backend/app/main.py`) |
-| SPA + API routing | `app.frontend()` in `backend/app/main.py` serves `frontend/dist` with an `index.html` fallback; API path operations always win |
-| Function budget | `vercel.json` → `functions["api/index.py"].maxDuration = 60` |
-| State | PostgreSQL in Docker Compose (`DATABASE_URL`); in-memory on Vercel (`AUTH_ENABLED=false`, see `docs/deployment.md`) |
+| SPA + API routing | `app.frontend()` in `backend/app/main.py` serves `frontend/dist` with an `index.html` fallback (navigation requests send `Accept: text/html`); API path operations always win |
+| Function budget | `vercel.json` → `functions["api/index.py"].maxDuration = 60` + `excludeFiles` (tests/docs/caches) |
+| State | in-memory (`AUTH_ENABLED=false` — no database on serverless); Docker Compose is the persistent deployment |
 
 Verified live: `/` (landing), `/app/*` (console), `/api/health`, static assets, `POST /api/simulate/*`,
 `POST /api/analyze`, `POST /api/incidents/{id}/contain`, `/api/demo/*`.

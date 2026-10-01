@@ -20,12 +20,13 @@ https://cyberverse-ai.vercel.app
 
 | File | Purpose |
 | --- | --- |
-| `vercel.json` | `installCommand` = npm deps + `pip install -r requirements.txt`; `buildCommand` = `npm run build --prefix frontend`; `outputDirectory` = `frontend/dist`; `functions["api/index.py"].maxDuration` = 60; security/caching headers |
-| `pyproject.toml` | `tool.vercel.entrypoint = "api.index:app"` |
+| `vercel.json` | `buildCommand` = `npm install --prefix frontend && npm run build --prefix frontend`; `outputDirectory` = `frontend/dist`; `functions["api/index.py"].maxDuration` = 60 with `excludeFiles` (tests/docs/caches); security/caching headers. **No custom install command** — see below |
+| `pyproject.toml` | `[project].dependencies` (mirrors `requirements.txt`) + `tool.vercel.entrypoint = "api.index:app"` |
+| Install (automatic) | The FastAPI framework preset auto-detects install: `uv` syncs `pyproject.toml` dependencies. Keeping install auto-detected lets Vercel optimize the function bundle (225 MB limit) — a custom install command disables that optimization and this app (scikit-learn + scipy) is close to the limit |
 | `api/index.py` | Serverless wrapper: puts `backend/` on `sys.path`, seeds the engine, repairs a runtime that strips the `/api` prefix, exports the ASGI app |
-| `requirements.txt` | Lean serverless dependency set (no pandas/uvicorn/pytest) |
+| `requirements.txt` | Serverless dependency set, mirrored by `pyproject.toml` (no pandas/uvicorn/pytest/psycopg — serverless has no database) |
 | `.vercelignore` | Keeps `.git`, `.venv`, `node_modules`, `dist`, model artifacts out of the upload |
-| `backend/app/main.py` | `app.frontend("/", directory="frontend/dist", fallback="index.html")` — API routes win, navigation requests fall back to the SPA shell |
+| `backend/app/main.py` | `app.frontend("/", directory="frontend/dist", fallback="index.html")` — API routes win, navigation requests (`Accept: text/html`) fall back to the SPA shell |
 
 `frontend/vercel.json` is only used if you deploy the frontend on its own (root directory `frontend`).
 
