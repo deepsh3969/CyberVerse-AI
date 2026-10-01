@@ -2,6 +2,7 @@ import React from 'react'
 import { useNavigate } from 'react-router-dom'
 import { CheckCircle2, CircleDashed, PlayCircle, RotateCcw, ShieldAlert, Square } from 'lucide-react'
 import { useApp } from '../context/AppContext'
+import { useAuth } from '../context/AuthContext'
 import { ProgressBar } from './ui'
 
 const STATE_LABEL = {
@@ -16,6 +17,7 @@ const STATE_LABEL = {
 
 export function DemoCompact() {
   const { demo, actions, offline, prefs } = useApp()
+  const { canWrite } = useAuth()
   const navigate = useNavigate()
   const state = demo?.state || 'idle'
   const pct = state === 'idle' ? 0 : ((Number(demo.step) + 1) / (demo.steps?.length || 12)) * 100
@@ -30,7 +32,12 @@ export function DemoCompact() {
           <ProgressBar value={pct} color="#f5c524" height={5} />
           <p className="mt-0.5 truncate text-[10.5px] text-slate-400">{demo.label}</p>
         </div>
-        <button className="text-slate-500 hover:text-alert-400" onClick={actions.stopDemo} aria-label="Stop demo">
+        <button
+          className="text-slate-500 hover:text-alert-400 disabled:opacity-40"
+          onClick={actions.stopDemo}
+          disabled={!canWrite}
+          aria-label="Stop demo"
+        >
           <Square size={13} />
         </button>
       </div>
@@ -41,13 +48,19 @@ export function DemoCompact() {
     <button
       className="btn-ghost hidden px-3 py-1.5 text-xs md:inline-flex"
       onClick={async () => {
-        if (offline) return
+        if (offline || !canWrite) return
         if (state === 'complete' || state === 'failed' || state === 'aborted') await actions.resetDemo()
         await actions.startDemo()
         navigate('/app')
       }}
-      disabled={offline}
-      title={offline ? 'Backend offline - demo unavailable' : 'Run the 2 minute scripted scenario'}
+      disabled={offline || !canWrite}
+      title={
+        !canWrite
+          ? 'Analyst role required'
+          : offline
+            ? 'Backend offline - demo unavailable'
+            : 'Run the 2 minute scripted scenario'
+      }
     >
       <PlayCircle size={14} className="text-cyber-400" />
       Hackathon Demo
@@ -57,6 +70,7 @@ export function DemoCompact() {
 
 export default function DemoController() {
   const { demo, actions, offline } = useApp()
+  const { canWrite } = useAuth()
   const navigate = useNavigate()
   const state = demo?.state || 'idle'
   const steps = demo?.steps || []
@@ -81,12 +95,12 @@ export default function DemoController() {
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {state === 'running' && (
-            <button className="btn-ghost text-xs" onClick={actions.stopDemo}>
+            <button className="btn-ghost text-xs" onClick={actions.stopDemo} disabled={!canWrite}>
               <Square size={13} /> Stop
             </button>
           )}
           {(state === 'timeout' || state === 'complete') && (
-            <button className="btn-ghost text-xs" onClick={actions.resetDemo}>
+            <button className="btn-ghost text-xs" onClick={actions.resetDemo} disabled={!canWrite}>
               <RotateCcw size={13} /> Reset
             </button>
           )}
@@ -99,7 +113,12 @@ export default function DemoController() {
             </button>
           )}
           {state !== 'running' && state !== 'timeout' && (
-            <button className="btn-primary text-xs" onClick={start} disabled={offline}>
+            <button
+              className="btn-primary text-xs"
+              onClick={start}
+              disabled={offline || !canWrite}
+              title={canWrite ? undefined : 'Analyst role required'}
+            >
               <PlayCircle size={14} /> {state === 'idle' ? 'Start Hackathon Demo' : 'Run Again'}
             </button>
           )}

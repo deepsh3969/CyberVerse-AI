@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { NavLink, Outlet, useLocation } from 'react-router-dom'
+import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import {
   Activity,
   Boxes,
@@ -7,6 +7,7 @@ import {
   FlaskConical,
   FileText,
   LayoutDashboard,
+  LogOut,
   Menu,
   Radio,
   Settings as SettingsIcon,
@@ -15,6 +16,7 @@ import {
   X,
 } from 'lucide-react'
 import { useApp } from '../context/AppContext'
+import { useAuth } from '../context/AuthContext'
 import Toasts from '../components/Toasts'
 import { DemoCompact } from '../components/DemoController'
 import { formatTime } from '../utils/format'
@@ -90,6 +92,33 @@ function ConnectionPill() {
         {state === 'online' ? 'Live' : state === 'checking' ? 'Checking' : 'Offline mode'}
       </span>
       <span className="hidden text-slate-500 lg:inline">· {settings?.ai_provider}</span>
+    </div>
+  )
+}
+
+function OperatorBadge() {
+  const { authEnabled, user, logout } = useAuth()
+  const navigate = useNavigate()
+
+  if (!authEnabled || !user) return null
+  return (
+    <div className="flex items-center gap-2.5">
+      <div className="hidden text-right leading-tight sm:block">
+        <p className="max-w-[160px] truncate text-[12px] text-slate-300">{user.full_name || user.email}</p>
+        <p className="mono text-[9.5px] uppercase tracking-[0.16em] text-cyber-600">{user.role}</p>
+      </div>
+      <button
+        className="btn-ghost px-2.5 py-1.5 text-xs"
+        onClick={async () => {
+          await logout()
+          navigate('/login')
+        }}
+        title="Sign out"
+        aria-label="Sign out"
+      >
+        <LogOut size={14} />
+        <span className="hidden sm:inline">Sign out</span>
+      </button>
     </div>
   )
 }
@@ -183,6 +212,7 @@ export default function CommandCenterLayout() {
           </div>
 
           <ConnectionPill />
+          <OperatorBadge />
           <DemoCompact />
         </header>
 

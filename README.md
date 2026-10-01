@@ -51,6 +51,8 @@ secure state.
 | **Live event stream** | Filterable, pausable console with timestamps and severity coloring |
 | **Reports** | Full incident report with executive summary, evidence, timeline, AI analysis, response plan → print to PDF or export standalone HTML |
 | **Hackathon demo** | One button runs a repeatable ~2 minute scripted narrative with a 12-step progress indicator |
+| **Auth, roles, audit** | JWT access tokens + rotating HttpOnly refresh cookie; roles `viewer / analyst / admin`; bcrypt passwords; per-IP login limits; audit trail of logins, containment, resets, user changes (`GET /api/audit`) |
+| **Production runtime** | PostgreSQL persistence (SQLAlchemy 2 + Alembic), Docker Compose (db + API + nginx), Prometheus `/metrics`, `/api/ready` readiness, structured JSON logs with request IDs, fail-fast config validation |
 | **Resilience** | Backend offline → bundled preview data + clear banner; invalid responses, timeouts and missing config all degrade gracefully |
 
 ## Architecture
@@ -59,22 +61,25 @@ secure state.
 ┌──────────────────────────────┐        ┌─────────────────────────────────────┐
 │  frontend/  (React + Vite)   │  HTTP  │  backend/  (FastAPI)                │
 │  ─ Landing / Command Center  │◄──────►│  ─ REST API  /api/*                 │
-│  ─ 3D network (R3F/Three)    │  JSON  │  ─ Simulator (8 synthetic scripts)  │
-│  ─ Charts (Recharts)         │        │  ─ Feature extraction               │
-│  ─ State + polling + fallback│        │  ─ Isolation Forest + rule engine   │
+│  ─ 3D network (R3F/Three)    │  JSON  │  ─ JWT auth + RBAC + audit          │
+│  ─ Charts (Recharts)         │        │  ─ Simulator (8 synthetic scripts)  │
+│  ─ State + polling + fallback│        │  ─ Feature extraction               │
+│  ─ Login / role-aware UI     │        │  ─ Isolation Forest + rule engine   │
 └──────────────────────────────┘        │  ─ Incident / graph / containment   │
                                         │  ─ AI analyst (local or LLM)        │
-                                        │  ─ In-memory store ⇄ MongoDB        │
+                                        │  ─ In-memory store ⇄ PostgreSQL     │
                                         └──────────────────┬──────────────────┘
-                                                           │ optional
+                                                           │ Docker Compose
                                                 ┌──────────▼──────────┐
-                                                │  MongoDB (persist)  │
+                                                │  PostgreSQL 16      │
+                                                │  (SQLAlchemy +      │
+                                                │   Alembic)          │
                                                 └─────────────────────┘
 ```
 
 Detailed documents: [`docs/architecture.md`](docs/architecture.md) ·
 [`docs/api.md`](docs/api.md) · [`docs/deployment.md`](docs/deployment.md) ·
-[`docs/demo-script.md`](docs/demo-script.md)
+[`docs/production.md`](docs/production.md) · [`docs/demo-script.md`](docs/demo-script.md)
 
 ## AI / ML architecture
 
@@ -117,7 +122,7 @@ Lucide React · Framer Motion · React Router · Vitest + Testing Library
 
 **Backend:** Python 3.11 · FastAPI · Pydantic · scikit-learn · NumPy · pandas · Uvicorn · pytest
 
-**Database:** MongoDB (optional) with automatic in-memory demo fallback
+**Database & auth:** PostgreSQL 16 · SQLAlchemy 2 · Alembic · PyJWT (HS256) · bcrypt · SQLite (tests)
 
 ---
 
@@ -161,13 +166,20 @@ Copy [`.env.example`](.env.example).
 | --- | --- | --- | --- |
 | `VITE_API_URL` | frontend | no (prod) | Backend base URL; empty = same-origin `/api` |
 | `VITE_POLL_INTERVAL` | frontend | no | Dashboard polling cadence (ms) |
-| `MONGODB_URI` | backend | no | Enables MongoDB persistence; empty = in-memory demo mode |
-| `MONGODB_DB` | backend | no | Database name (default `cyberverse`) |
+| `DATABASE_URL` | backend | no | `postgresql+psycopg://user:pass@host/db`; empty = in-memory demo mode |
+| `AUTH_ENABLED` | backend | no (default `true`) | Enforced only together with `DATABASE_URL` |
+| `JWT_SECRET` | backend | **yes in production** | HS256 signing key (≥ 32 chars) |
+| `SEED_ADMIN_EMAIL` / `SEED_ADMIN_PASSWORD` | backend | prod + auth | First admin account (bcrypt-hashed at boot) |
+| `ACCESS_TOKEN_TTL` / `REFRESH_TOKEN_TTL` | backend | no | Token lifetimes, seconds (default 900 / 604800) |
+| `AUTH_LOGIN_LIMIT_PER_MINUTE` | backend | no | Failed-login budget per IP (default 10) |
+| `AUTH_REQUIRE_READ` | backend | no | Also gate read endpoints behind auth |
+| `COOKIES_SECURE` | backend | no | Refresh cookie `Secure` flag (auto in production) |
 | `AI_API_KEY` | backend | no | Enables external LLM for the AI analyst |
 | `AI_PROVIDER` / `AI_API_BASE` / `AI_MODEL` | backend | no | LLM provider selection (OpenAI-compatible by default) |
-| `CORS_ORIGINS` | backend | no | Allowed browser origins |
+| `CORS_ORIGINS` | backend | no | Allowed browser origins (explicit list in production) |
 | `RATE_LIMIT_PER_MINUTE` | backend | no | Per-client request budget (default 240) |
-| `ENVIRONMENT` | backend | no | `development` / `production` |
+| `ENVIRONMENT` | backend | no | `development` / `production` (production enables fail-fast validation) |
+| `LOG_FORMAT` / `METRICS_ENABLED` | backend | no | `json`/`text` logs; `/metrics` toggle |
 
 **No secret is ever shipped to the browser.** The frontend only receives the non-sensitive `/api/settings`
 document.
@@ -183,26 +195,34 @@ document.
 ### Tests
 
 ```bash
-# backend (20 tests)
+# backend (47 tests: API, detection, auth/RBAC, database, observability)
 cd backend && python -m pytest tests -q
 
-# frontend (6 tests)
+# frontend (15 tests: app + auth flows)
 cd frontend && npm run test
 
 # frontend production build
 cd frontend && npm run build
 ```
 
-### MongoDB setup (optional)
+### One-command stack (Docker Compose)
 
 ```bash
-# local
-mongod --dbpath ./data
-# or free tier Atlas, then:
-export MONGODB_URI="mongodb+srv://user:pass@cluster0.mongodb.net/cyberverse"
+# PostgreSQL + API + nginx console (dev defaults; see docs/production.md)
+docker compose up --build
+# → http://localhost:8080 · login admin@cyberverse.local / cyberverse-admin
 ```
-Restart the backend — `/api/health` reports `database: mongodb`. Without it the API reports `disabled`
-and still runs the full demo from memory.
+
+### PostgreSQL (without Docker)
+
+```bash
+# local server, then:
+export DATABASE_URL="postgresql+psycopg://cyberverse:secret@localhost:5432/cyberverse"
+cd backend && alembic upgrade head && uvicorn app.main:app --reload --port 8000
+```
+
+Restart the backend — `/api/health` reports `database: postgresql`. Without
+`DATABASE_URL` the API reports `disabled` and runs the full demo from memory.
 
 ### AI API setup (optional)
 
@@ -242,7 +262,7 @@ API share a single origin — no `VITE_API_URL` and no CORS configuration:
 | Python entrypoint | `pyproject.toml` → `tool.vercel.entrypoint = "api.index:app"` (wraps `backend/app/main.py`) |
 | SPA + API routing | `app.frontend()` in `backend/app/main.py` serves `frontend/dist` with an `index.html` fallback; API path operations always win |
 | Function budget | `vercel.json` → `functions["api/index.py"].maxDuration = 60` |
-| State | in-memory (demo mode); add `MONGODB_URI` in project settings for persistence |
+| State | PostgreSQL in Docker Compose (`DATABASE_URL`); in-memory on Vercel (`AUTH_ENABLED=false`, see `docs/deployment.md`) |
 
 Verified live: `/` (landing), `/app/*` (console), `/api/health`, static assets, `POST /api/simulate/*`,
 `POST /api/analyze`, `POST /api/incidents/{id}/contain`, `/api/demo/*`.
@@ -289,8 +309,11 @@ docs/screenshots/
 CyberVerse-AI/
 ├── frontend/          # React + Vite + Tailwind + Three.js
 ├── backend/           # FastAPI, detection engine, simulator, incidents
+│   └── alembic/       # versioned schema migrations (PostgreSQL)
 ├── ml/                # Training script, scorer, sample data
-├── docs/              # architecture, API, demo script, deployment
+├── docs/              # architecture, API, demo script, deployment, production runbook
+├── .github/workflows/ # CI: pytest + vitest + build + docker images
+├── docker-compose.yml # db (PostgreSQL) + api + web (nginx)
 ├── .env.example
 ├── LICENSE
 └── README.md
@@ -299,11 +322,10 @@ CyberVerse-AI/
 ## Future improvements
 
 - Real WebSocket transport (an SSE endpoint already exists at `/api/events/stream`).
-- Multi-analyst auth, roles and audit trails.
 - Sigma/YARA-style rule authoring UI.
 - Additional supervised models (Random Forest / XGBoost) with labelled incident history.
 - Continuous training loop from analyst feedback.
-- Containerisation (Docker Compose) for one-command local runs.
+- Horizontal API scaling (requires shared live-state layer; see `docs/production.md` § 6).
 
 ## Team
 

@@ -2,6 +2,7 @@ import React, { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Activity, ArrowRight, Filter, RefreshCw } from 'lucide-react'
 import { useApp } from '../context/AppContext'
+import { useAuth } from '../context/AuthContext'
 import { EmptyState, SectionHeading, SeverityBadge, StatusPill } from '../components/ui'
 import { formatDateTime, relativeTime, riskBand } from '../utils/format'
 
@@ -9,6 +10,7 @@ const STATUSES = ['ALL', 'OPEN', 'INVESTIGATING', 'CONTAINED', 'RESOLVED']
 
 export default function Incidents() {
   const { incidents, actions, offline, loading } = useApp()
+  const { canWrite } = useAuth()
   const [status, setStatus] = useState('ALL')
 
   const filtered = useMemo(
@@ -116,9 +118,10 @@ export default function Incidents() {
                       <div className="flex items-center gap-2">
                         <StatusPill status={i.status} />
                         <select
-                          className="rounded border border-white/10 bg-ink-900 px-1.5 py-0.5 text-[11px] text-slate-400 focus:border-cyber-400/50 focus:outline-none"
+                          className="rounded border border-white/10 bg-ink-900 px-1.5 py-0.5 text-[11px] text-slate-400 focus:border-cyber-400/50 focus:outline-none disabled:opacity-40"
                           value={i.status}
-                          disabled={offline}
+                          disabled={offline || !canWrite}
+                          title={canWrite ? undefined : 'Analyst role required'}
                           onChange={(e) => actions.setIncidentStatus(i.id, e.target.value)}
                           aria-label={`Change status for ${i.id}`}
                         >

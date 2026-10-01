@@ -16,7 +16,7 @@ def test_health(client):
     body = r.json()
     assert body["status"] == "ok"
     assert body["ml_backend"] == "isolation-forest"
-    assert body["database"] in ("disabled", "mongodb") or body["database"].startswith("unavailable")
+    assert body["database"] in ("disabled", "sqlite", "postgresql") or body["database"].startswith("unavailable")
 
 
 def test_dashboard_shape(client):
@@ -176,6 +176,9 @@ def test_settings_has_no_secrets(client):
     blob = str(body).lower()
     assert "api_key" not in blob
     assert "mongodb_uri" not in blob
+    assert "database_url" not in blob
+    assert "jwt" not in blob
+    assert body["auth_enabled"] is False
 
 
 def test_attack_graph_endpoint(client):

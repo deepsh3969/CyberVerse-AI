@@ -8,13 +8,18 @@ cannot be reached.
 
 ```
 Browser (React SPA)
-   │  fetch /api/* (timeout + fallback)
+   │  fetch /api/* (timeout + fallback, 401 → silent refresh → retry)
    ▼
-FastAPI  ──► Engine (simulate → features → detect → incident → graph → contain)
-   │              │
-   │              ├── ThreatDetector (Isolation Forest + rule engine)
-   │              ├── Analyst (local engine | optional LLM)
-   │              └── Store (thread-safe in-memory ⇄ MongoDB mirror)
+FastAPI
+   │  RequestContextMiddleware (request-id, security headers, access log, metrics)
+   │  RBAC deps: viewer / analyst / admin  (JWT bearer + rotating refresh cookie)
+   ▼
+Engine (simulate → features → detect → incident → graph → contain)
+   │
+   ├── ThreatDetector (Isolation Forest + rule engine)
+   ├── Analyst (local engine | optional LLM)
+   ├── Store (thread-safe in-memory ⇄ PostgreSQL mirror)
+   │      └── SQLAlchemy 2 · Alembic · users / refresh tokens / audit logs
    ▼
 Response JSON  ◄── Dashboard aggregation, timelines, reports
 ```
@@ -28,8 +33,36 @@ values and human labels. This is the single source of truth for both the API and
 
 ### `services/store.py`
 Thread-safe in-memory store (`RLock`) holding events (bounded deque), threats, incidents, attack graphs,
-per-node status/risk and score history. `Persistence` mirrors writes to MongoDB when `MONGODB_URI` is
-configured and swallows connection errors so demo mode always works.
+per-node status/risk and score history. `Persistence` mirrors writes to PostgreSQL when `DATABASE_URL` is
+configured (SQLAlchemy 2, models in `db/models.py`) and swallows connection errors so demo mode always
+works. On startup `bootstrap.py` hydrates the store from the database, so restarts keep incidents,
+graphs, users and audit history. Schema changes are versioned with Alembic (`backend/alembic/`).
+
+### `core/security.py` + `api/auth.py` + `api/deps.py`
+Authentication and authorization:
+
+- `security.py` — bcrypt password hashing, HS256 JWT mint/verify, SHA-256 refresh-token hashing.
+- `auth.py` — `POST /login` (per-IP rate limit), `POST /refresh` (rotates the HttpOnly `cv_rt` cookie),
+  `POST /logout`, `GET /me`, `POST /password`, user CRUD, `GET /audit`.
+- `deps.py` — FastAPI dependencies `require_user`, `require_read`, `require_role("analyst"|"admin")`;
+  when auth is inactive the anonymous demo user passes every check.
+- `services/users.py` — `UserRepository` with PostgreSQL backend and in-memory fallback;
+  role order `viewer < analyst < admin`.
+
+Auth is enforced only when `AUTH_ENABLED=true` **and** `DATABASE_URL` is set; production startup
+(`core/config.py::validate()`) fails fast on missing `JWT_SECRET`, `DATABASE_URL`, admin password or
+explicit `CORS_ORIGINS`.
+
+### `core/middleware.py` + `api/ratelimit.py` + `services/audit.py`
+Cross-cutting request pipeline: request IDs (`X-Request-ID`), JSON/text structured logs
+(`core/logging.py`), security headers (+ HSTS in production), 413 body cap, per-IP sliding-window
+rate limiting with a separate stricter budget for logins, and audit records (actor, action, resource,
+IP, payload) persisted to `audit_logs` and queryable via `GET /api/audit`.
+
+### `api/observability.py` + `core/metrics.py`
+`GET /api/health` (liveness), `GET /api/ready` (readiness — pings the database), `GET /metrics`
+(Prometheus text: request counters, latency histograms, login/simulation counters, database gauge).
+Metrics stay on the API tier; the bundled nginx returns 404 for `/metrics`.
 
 ### `simulator/scenarios.py`
 Eight scenario builders emit timestamped event sequences with metadata (`evidence`, `guaranteed`,
@@ -87,8 +120,12 @@ stream endpoint.
 
 ## Security & resilience
 
-- CORS restricted to configured origins; all inputs validated by Pydantic.
-- Rate limiting per client IP; request bodies capped by schema constraints.
-- Secrets only in backend env vars; `/api/settings` exposes non-sensitive configuration.
-- Frontend timeouts on every request, offline banner, bundled preview dataset, per-page empty/error states.
+- JWT auth with rotating opaque refresh tokens (hashed at rest), bcrypt passwords, three roles, audit
+  trail; per-IP login throttling; all writes require `analyst+`, destructive reset requires `admin`.
+- CORS restricted to configured origins; all inputs validated by Pydantic; 1 MiB body cap.
+- Rate limiting per client IP on the general and login paths.
+- Secrets only in backend env vars; production fails fast on missing/weak config; `/api/settings`
+  exposes non-sensitive configuration only.
+- Frontend timeouts on every request, silent 401-refresh-retry, offline banner, bundled preview
+  dataset, per-page empty/error states; role-aware controls (read-only UI for `viewer`).
 - No offensive capability: events are records in memory, nothing is sent anywhere.

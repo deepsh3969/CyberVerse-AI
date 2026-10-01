@@ -2,6 +2,7 @@ import React, { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { FlaskConical, GitBranch, Loader2, Play, ShieldAlert } from 'lucide-react'
 import { useApp } from '../context/AppContext'
+import { useAuth } from '../context/AuthContext'
 import EventConsole from '../components/EventConsole'
 import { EmptyState, Panel, SectionHeading, SeverityBadge, StatusPill } from '../components/ui'
 import { formatTime, riskBand, severityBgClass, severityClass } from '../utils/format'
@@ -20,6 +21,7 @@ const SEV_TONE = {
 
 export default function Simulator() {
   const { scenarios, events, actions, offline, pushToast } = useApp()
+  const { canWrite } = useAuth()
   const navigate = useNavigate()
   const [intensity, setIntensity] = useState('normal')
   const [busy, setBusy] = useState(null)
@@ -92,8 +94,8 @@ export default function Simulator() {
             <button
               className="btn-primary mt-3 w-full py-2 text-xs"
               onClick={() => run(s)}
-              disabled={Boolean(busy) || offline}
-              title={offline ? 'Backend offline' : 'Generate synthetic events'}
+              disabled={Boolean(busy) || offline || !canWrite}
+              title={!canWrite ? 'Analyst role required' : offline ? 'Backend offline' : 'Generate synthetic events'}
             >
               {busy === s.key ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
               {busy === s.key ? 'Running…' : 'Simulate Attack'}

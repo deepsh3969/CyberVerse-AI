@@ -19,11 +19,11 @@ for _path in (REPO_ROOT, BACKEND_DIR):
         sys.path.insert(0, _path)
 
 from app.main import app as fastapi_app  # noqa: E402
-from app.services.engine import ENGINE  # noqa: E402
+from app.bootstrap import bootstrap  # noqa: E402
 
 # The serverless runtime does not always execute ASGI lifespan hooks, and the
-# operation is idempotent (STORE.seeded guard), so seed at import time too.
-ENGINE.seed()
+# bootstrap is idempotent (logged + guarded), so run it at import time too.
+bootstrap()
 
 # First path segments that belong to the API. Used only to repair a runtime
 # that strips the ``/api`` prefix; everything else (``/``, ``/assets/*``,
@@ -44,6 +44,10 @@ API_SEGMENTS = frozenset(
         "demo",
         "settings",
         "reset",
+        "auth",
+        "audit",
+        "ready",
+        "metrics",
     }
 )
 

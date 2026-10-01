@@ -1,6 +1,7 @@
 import React, { useState } from 'react'
 import { CheckCircle2, Database, KeyRound, MonitorCog, RotateCcw, ShieldAlert, Volume2 } from 'lucide-react'
 import { useApp } from '../context/AppContext'
+import { useAuth } from '../context/AuthContext'
 import { apiBase } from '../services/api'
 import { Panel, SectionHeading, Spinner } from '../components/ui'
 import { playTone } from '../utils/prefs'
@@ -32,6 +33,7 @@ function Row({ label, hint, children }) {
 
 export default function Settings() {
   const { settings, health, offline, actions, prefs, setPrefs, pushToast } = useApp()
+  const { canWrite, isAdmin, authEnabled, user } = useAuth()
   const [testing, setTesting] = useState(false)
 
   const testConnection = async () => {
@@ -174,17 +176,42 @@ export default function Settings() {
 
         <Panel title="Sandbox controls" subtitle="Everything here changes simulated state only" icon={<ShieldAlert size={14} />}>
           <Row label="Reset demo sequence" hint="Restores the scripted walkthrough to its starting state.">
-            <button className="btn-ghost text-xs" onClick={actions.resetDemo} disabled={offline}>
+            <button
+              className="btn-ghost text-xs"
+              onClick={actions.resetDemo}
+              disabled={offline || !canWrite}
+              title={canWrite ? undefined : 'Analyst role required'}
+            >
               <RotateCcw size={13} /> Reset demo
             </button>
           </Row>
-          <Row label="Reset sandbox" hint="Clears events, threats, incidents and node states, then reseeds baseline data.">
-            <button className="btn-danger text-xs" onClick={actions.resetSandbox} disabled={offline}>
+          <Row
+            label="Reset sandbox"
+            hint="Clears events, threats, incidents and node states, then reseeds baseline data."
+          >
+            <button
+              className="btn-danger text-xs"
+              onClick={actions.resetSandbox}
+              disabled={offline || !isAdmin}
+              title={isAdmin ? undefined : 'Admin role required'}
+            >
               <RotateCcw size={13} /> Reset sandbox
             </button>
           </Row>
           <Row label="Assets under management" hint="Nodes in the simulated topology.">
             <span className="mono text-[12px] text-slate-300">{settings?.assets ?? '—'}</span>
+          </Row>
+          <Row
+            label="Access control"
+            hint={
+              authEnabled
+                ? 'Authentication is enforced: writes require analyst or admin, resets and user management require admin.'
+                : 'Demo deployment: the API accepts unauthenticated requests (no database configured).'
+            }
+          >
+            <span className="mono text-[12px] text-slate-300">
+              {authEnabled && user ? `${user.email} · ${user.role}` : authEnabled ? 'not signed in' : 'open demo'}
+            </span>
           </Row>
           <div className="mt-3 rounded-lg border border-warn-500/25 bg-warn-500/[0.06] p-3 text-[12px] leading-relaxed text-warn-400">
             CyberVerse AI performs defensive simulation only. It does not scan, probe, exploit or otherwise

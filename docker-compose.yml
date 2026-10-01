@@ -1,0 +1,59 @@
+# CyberVerse AI — full stack: PostgreSQL + API + nginx console.
+#
+#   docker compose up --build        -> http://localhost:8080
+#
+# Defaults are DEV-safe only: set ENVIRONMENT=production and real secrets in
+# `.env` before exposing this anywhere (see docs/production.md).
+
+name: cyberverse-ai
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-cyberverse}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cyberverse-dev-password}
+      POSTGRES_DB: ${POSTGRES_DB:-cyberverse}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-cyberverse} -d $${POSTGRES_DB:-cyberverse}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  api:
+    build: ./backend
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-cyberverse}:${POSTGRES_PASSWORD:-cyberverse-dev-password}@db:5432/${POSTGRES_DB:-cyberverse}
+      DB_AUTOCREATE: ${DB_AUTOCREATE:-true}
+      AUTH_ENABLED: ${AUTH_ENABLED:-true}
+      # DEV DEFAULT — replace before any real deployment.
+      SEED_ADMIN_EMAIL: ${SEED_ADMIN_EMAIL:-admin@cyberverse.local}
+      SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:-cyberverse-admin}
+      JWT_SECRET: ${JWT_SECRET:-dev-only-jwt-secret-change-me-0123456789}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080,http://127.0.0.1:8080}
+      TRUST_PROXY: "true"
+      AUTH_LOGIN_LIMIT_PER_MINUTE: ${AUTH_LOGIN_LIMIT_PER_MINUTE:-10}
+      # Set to "true" behind TLS so refresh cookies get Secure.
+      # COOKIES_SECURE: "true"
+    ports:
+      - "${API_PORT:-8000}:8000"
+
+  web:
+    build: ./frontend
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - "${WEB_PORT:-8080}:80"
+
+volumes:
+  pgdata:

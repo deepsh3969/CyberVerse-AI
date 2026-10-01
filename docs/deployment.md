@@ -36,14 +36,34 @@ Environment Variables:
 
 | Name | Effect |
 | --- | --- |
-| `MONGODB_URI` / `MONGODB_DB` | Persist telemetry and incidents in MongoDB; otherwise in-memory demo mode |
+| `AUTH_ENABLED` | Set to `false` for the public serverless demo — no database on Vercel, so auth cannot engage anyway (`auth_active = AUTH_ENABLED && DATABASE_URL`) |
+| `DATABASE_URL` | `postgresql+psycopg://…` to enable persistence **and** auth on a Python host with a real database (not applicable to Vercel functions) |
+| `JWT_SECRET` / `SEED_ADMIN_PASSWORD` | Required by fail-fast validation when `ENVIRONMENT=production` + auth |
 | `AI_API_KEY` / `AI_PROVIDER` / `AI_API_BASE` / `AI_MODEL` | External LLM for the AI analyst (local engine is the default) |
 | `CORS_ORIGINS` | Only needed if you split the frontend onto another domain |
 | `RATE_LIMIT_PER_MINUTE` | Per-client request budget |
 
 Build-time variables (`VITE_*`) are inlined at build; after changing one, redeploy.
 
-## Deploying
+## Docker Compose (recommended for production-grade runs)
+
+```bash
+# .env next to docker-compose.yml — required for ENVIRONMENT=production:
+#   JWT_SECRET, SEED_ADMIN_PASSWORD, POSTGRES_PASSWORD, CORS_ORIGINS
+docker compose up --build -d
+docker compose ps      # db healthy · api healthy · web healthy
+```
+
+| | |
+| --- | --- |
+| Console | http://localhost:8080 (nginx: SPA + `/api` reverse proxy) |
+| API | http://localhost:8000 (FastAPI, `/docs`, `/metrics`) |
+| Database | PostgreSQL 16, named volume `pgdata` |
+
+Full runbook — production checklist, roles, migrations, backup, scaling limits:
+[`docs/production.md`](production.md).
+
+## Deploying (Vercel)
 
 ```bash
 vercel link --project cyberverse-ai   # first time only
@@ -72,17 +92,21 @@ Start:  uvicorn app.main:app --host 0.0.0.0 --port $PORT
 | Landing page | `GET /` → `200 text/html` |
 | Deep link | `GET /app/incidents` → `200 text/html` (SPA fallback) |
 | API alive | `GET /api/health` → `{"status":"ok", ...}` |
+| Readiness | `GET /api/ready` → `200` once DB ping succeeds (`503` while down) |
+| Metrics | `GET /metrics` → Prometheus text (API tier only) |
 | Static assets | `GET /assets/<hash>.js` → `200 text/javascript` |
 | Detection | `POST /api/simulate/data-exfiltration` → threat + incident + graph |
 | AI analysis | `POST /api/analyze` → sections + recommendations |
 | Containment | `POST /api/incidents/{id}/contain` → `THREAT CONTAINED` |
 | Demo | `POST /api/demo/start` → steps advance; `POST /api/demo/stop` then `POST /api/demo/reset` |
-| Local tests | `backend: python -m pytest tests -q` (20) · `frontend: npm run test` (6) · `npm run build` |
+| Auth (compose) | `POST /api/auth/login` → token + cookie; `401` without bearer; `403` for viewer writes; `GET /api/audit` admin-only |
+| Local tests | `backend: python -m pytest tests -q` (47) · `frontend: npm run test` (15) · `npm run build` |
 
 ## Operational notes
 
-- **State is per function instance.** The demo stores everything in memory; a cold start reseeds the
-  baseline. For a multi-user deployment add `MONGODB_URI` so every instance shares state.
+- **State is per function instance on Vercel.** The serverless demo stores everything in memory
+  (`AUTH_ENABLED=false`); a cold start reseeds the baseline. For multi-user or persistent deployments
+  use Docker Compose with `DATABASE_URL` (PostgreSQL) — see `docs/production.md`.
 - **SSE** (`/api/events/stream`) is secondary — the console polls by default, which is the reliable path
   on serverless.
 - **Rate limiting** is per instance and in-memory.

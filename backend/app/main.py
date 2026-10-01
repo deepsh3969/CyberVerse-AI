@@ -4,13 +4,18 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 
+from app.api.auth import audit_router, auth_router
+from app.api.observability import metrics_router, ready_router
+from app.api.ratelimit import rate_limit
 from app.api.routes import router
+from app.bootstrap import bootstrap
 from app.core.config import settings
+from app.core.middleware import RequestContextMiddleware
 from app.services.engine import ENGINE
 
 
@@ -29,7 +34,7 @@ def _find_dist() -> Path | None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    ENGINE.seed()
+    bootstrap()
     yield
 
 
@@ -43,11 +48,15 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins or ["*"],
-    allow_credentials=False,
+    # Required for the HttpOnly refresh cookie when the console and the API
+    # are served from different origins (always false on the Vercel build).
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
     max_age=600,
 )
+# Outermost: correlation id, access log, metrics, security headers, body cap.
+app.add_middleware(RequestContextMiddleware)
 
 
 @app.exception_handler(RequestValidationError)
@@ -88,6 +97,10 @@ def root() -> JSONResponse | HTMLResponse:
 
 
 app.include_router(router, prefix=settings.api_prefix)
+app.include_router(auth_router, prefix=settings.api_prefix, dependencies=[Depends(rate_limit)])
+app.include_router(audit_router, prefix=settings.api_prefix, dependencies=[Depends(rate_limit)])
+app.include_router(ready_router, prefix=settings.api_prefix)
+app.include_router(metrics_router)
 
 
 def _register_frontend() -> None:

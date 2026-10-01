@@ -3,6 +3,9 @@
 Base URL: `http://localhost:8000` · prefix `/api` · interactive docs at `/docs`.
 All bodies are JSON. Errors return `{ "detail": string }`.
 
+When auth is active (see **Authentication** below), send `Authorization: Bearer <access_token>`;
+the refresh token travels in the `cv_rt` cookie. With no database the API is fully open.
+
 ## Meta
 
 ### `GET /`
@@ -17,12 +20,74 @@ serves the SPA landing page (`index.html`).
 ```
 
 ### `GET /api/settings`
-Non-secret runtime configuration (app name, database mode, provider, rate limit, asset count).
+Non-secret runtime configuration (app name, database mode, provider, rate limit, asset count, whether
+auth is active).
 
 ### `GET /api/scenarios`
 ```json
 { "items": [ { "key": "brute-force", "name": "Brute Force Simulation",
                "severity": "HIGH", "description": "…" } ] }
+```
+
+## Authentication
+
+Active only when `AUTH_ENABLED=true` and `DATABASE_URL` is set (otherwise these endpoints return
+`403 {"detail": "Authentication is disabled in this deployment (demo mode)"}` and the rest of the API
+runs open).
+
+Roles: `viewer` < `analyst` < `admin`. Reads need a valid token when `AUTH_REQUIRE_READ=true`;
+all writes need `analyst+`; `POST /api/reset`, user management and `GET /api/audit` need `admin`.
+
+### `POST /api/auth/login` — rate limited per IP (default 10/min)
+Body: `{ "email": "...", "password": "..." }`
+
+```json
+{ "access_token": "eyJ…", "token_type": "bearer", "expires_in": 900,
+  "user": { "id": "usr-…", "email": "analyst@corp.example", "role": "analyst",
+            "full_name": "…", "is_active": true, "last_login": 1767225600 } }
+```
+Also sets the `cv_rt` refresh cookie (HttpOnly, path `/api/auth`).
+
+### `POST /api/auth/refresh`
+No body; reads the `cv_rt` cookie, **revokes and rotates it**, returns the same shape as login.
+
+### `POST /api/auth/logout` · `GET /api/auth/me`
+Logout revokes the refresh token and clears the cookie. `me` → `{ "user": {...} }`.
+
+### `POST /api/auth/password`
+Body: `{ "current_password": "…", "new_password": "…" }` (≥ 8 chars). On success every session for
+that user is revoked → `{ "status": "password updated", "sessions_revoked": 3 }`.
+
+### User management (admin)
+| Endpoint | Body |
+| --- | --- |
+| `GET /api/auth/users` | — → `{ "items": [...], "total": n }` |
+| `POST /api/auth/users` | `{ "email", "password", "role", "full_name" }` → `201 { "user": {...} }` |
+| `PATCH /api/auth/users/{id}` | any of `{ "role", "is_active", "full_name" }` |
+| `DELETE /api/auth/users/{id}` | — → `{ "status": "deleted", "id": "usr-…" }` |
+
+Self-demotion, self-disable and self-delete are rejected with `409`.
+
+### `GET /api/audit?limit=100` (admin)
+```json
+{ "items": [ { "id": "…", "created_at": 1767225600.1, "actor_id": "usr-…",
+               "actor_email": "analyst@corp.example", "action": "incident.contained",
+               "resource": "INC-…", "detail": {}, "ip": "203.0.113.10",
+               "payload": {} } ],
+  "total": 12 }
+```
+
+## Observability
+
+### `GET /api/ready`
+Readiness for load balancers: `200 {"status": "ready", ...}` once the database ping succeeds,
+`503` while the DB is down or missing (`DATABASE_URL` unset → still `200` in memory mode).
+
+### `GET /metrics`
+Prometheus text format (enabled with `METRICS_ENABLED=true`, API tier only): request
+count/latency by route and status, login attempts, simulations, logins gauge, database mode.
+`METRICS_ENABLED=false` → `404`.
+
 ```
 
 ## Data
@@ -155,7 +220,11 @@ Clears events, threats, incidents, graphs and node states, then reseeds baseline
 
 | Status | Meaning |
 | --- | --- |
-| 404 | Unknown incident / scenario / graph / report |
+| 401 | Missing/expired access token, bad credentials, revoked refresh token |
+| 403 | Authenticated but role too low; auth endpoints on a demo deployment; disabled account |
+| 404 | Unknown incident / scenario / graph / report / user |
+| 409 | Self-demotion/self-delete conflict |
+| 413 | Request body larger than `MAX_BODY_BYTES` (1 MiB) |
 | 422 | Schema validation failure (e.g. invalid `intensity` or `status`) |
-| 429 | Rate limit exceeded (`RATE_LIMIT_PER_MINUTE`) |
+| 429 | Rate limit exceeded (`RATE_LIMIT_PER_MINUTE` / `AUTH_LOGIN_LIMIT_PER_MINUTE`) |
 | 500 | Unexpected error — returns `{ "detail": "ExceptionType: message" }` |

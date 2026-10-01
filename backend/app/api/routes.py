@@ -2,13 +2,14 @@
 from __future__ import annotations
 
 import time
-from collections import defaultdict, deque
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from app.api.deps import require_read, require_role
+from app.api.ratelimit import client_ip, rate_limit
 from app.core.config import settings
 from app.ml.detector import DETECTOR
 from app.models.schemas import (
@@ -28,6 +29,7 @@ from app.models.schemas import (
 )
 from app.services import topology
 from app.services.analyst import analyze
+from app.services.audit import audit
 from app.services.demo import DEMO
 from app.services.engine import ENGINE
 from app.services.store import STORE
@@ -38,25 +40,15 @@ router = APIRouter()
 STARTED_AT = time.time()
 VERSION = "1.0.0"
 
-# --------------------------------------------------------------- rate limiting
-_VISITS: dict[str, deque] = defaultdict(deque)
-
-
-def rate_limit(request: Request) -> None:
-    limit = settings.rate_limit_per_minute
-    if limit <= 0:
-        return
-    ip = request.client.host if request.client else "unknown"
-    now = time.time()
-    bucket = _VISITS[ip]
-    while bucket and now - bucket[0] > 60:
-        bucket.popleft()
-    if len(bucket) >= limit:
-        raise HTTPException(status_code=429, detail="Rate limit exceeded. Slow down.")
-    bucket.append(now)
-
-
+# --------------------------------------------------------------- dependencies
 DependsRate = Depends(rate_limit)
+
+# reads: open by default, gated when AUTH_REQUIRE_READ=true
+READ = [DependsRate, Depends(require_read)]
+# writes: authenticated analyst/admin (open only when auth is inactive)
+WRITE = [DependsRate, Depends(require_role("analyst"))]
+# destructive admin operations (sandbox reset)
+ADMIN = [DependsRate, Depends(require_role("admin"))]
 
 
 # ---------------------------------------------------------------------- health
@@ -73,18 +65,18 @@ def health() -> HealthResponse:
 
 
 # ------------------------------------------------------------------ dashboard
-@router.get("/dashboard", response_model=Dashboard, dependencies=[DependsRate])
+@router.get("/dashboard", response_model=Dashboard, dependencies=READ)
 def dashboard() -> Dashboard:
     return ENGINE.dashboard()
 
 
-@router.get("/network", response_model=Network, dependencies=[DependsRate])
+@router.get("/network", response_model=Network, dependencies=READ)
 def network() -> Network:
     return ENGINE.network()
 
 
 # --------------------------------------------------------------------- events
-@router.get("/events", dependencies=[DependsRate])
+@router.get("/events", dependencies=READ)
 def events(
     limit: int = Query(120, ge=1, le=1000),
     offset: int = Query(0, ge=0),
@@ -94,7 +86,7 @@ def events(
     return {"items": items, "total": len(STORE.events), "analyzed": STORE.events_analyzed}
 
 
-@router.get("/events/stream", dependencies=[DependsRate])
+@router.get("/events/stream", dependencies=READ)
 def event_stream() -> StreamingResponse:
     """Server-sent events feed. Frontend falls back to polling when unavailable."""
 
@@ -115,14 +107,14 @@ def event_stream() -> StreamingResponse:
 
 
 # -------------------------------------------------------------------- threats
-@router.get("/threats", dependencies=[DependsRate])
+@router.get("/threats", dependencies=READ)
 def threats(limit: int = Query(50, ge=1, le=300)) -> dict[str, Any]:
     items = STORE.list_threats(limit)
     return {"items": [t.model_dump(mode="json") for t in items], "total": len(STORE.threats)}
 
 
 # ------------------------------------------------------------------ incidents
-@router.get("/incidents", dependencies=[DependsRate])
+@router.get("/incidents", dependencies=READ)
 def incidents(status: str = Query("")) -> dict[str, Any]:
     items = STORE.list_incidents()
     if status:
@@ -130,7 +122,7 @@ def incidents(status: str = Query("")) -> dict[str, Any]:
     return {"items": [i.model_dump(mode="json") for i in items], "total": len(STORE.incidents)}
 
 
-@router.get("/incidents/{incident_id}", dependencies=[DependsRate])
+@router.get("/incidents/{incident_id}", dependencies=READ)
 def incident_detail(incident_id: str) -> dict[str, Any]:
     inc = STORE.get_incident(incident_id)
     if not inc:
@@ -145,8 +137,9 @@ class StatusBody(BaseModel):
     status: str = Field(..., min_length=3, max_length=20)
 
 
-@router.patch("/incidents/{incident_id}/status", dependencies=[DependsRate])
-def set_status(incident_id: str, body: StatusBody) -> dict[str, Any]:
+@router.patch("/incidents/{incident_id}/status", dependencies=WRITE)
+def set_status(incident_id: str, body: StatusBody, request: Request,
+               user: dict[str, Any] = Depends(require_role("analyst"))) -> dict[str, Any]:
     try:
         parsed = IncidentStatus(body.status.upper())
     except ValueError:
@@ -154,25 +147,40 @@ def set_status(incident_id: str, body: StatusBody) -> dict[str, Any]:
     inc = STORE.set_incident_status(incident_id, parsed)
     if not inc:
         raise HTTPException(status_code=404, detail="Incident not found")
+    audit(
+        "incident.status_changed",
+        user=user,
+        resource=incident_id,
+        detail={"status": parsed.value},
+        ip=client_ip(request),
+    )
     return {"incident": inc.model_dump(mode="json")}
 
 
-@router.post("/incidents/{incident_id}/contain", response_model=ContainmentResult, dependencies=[DependsRate])
-def contain(incident_id: str) -> ContainmentResult:
-    result = ENGINE.contain(incident_id)
+@router.post("/incidents/{incident_id}/contain", response_model=ContainmentResult, dependencies=WRITE)
+def contain(incident_id: str, request: Request,
+            user: dict[str, Any] = Depends(require_role("analyst"))) -> ContainmentResult:
+    result = ENGINE.contain(incident_id, actor=user.get("email", "analyst"))
     if not result:
         raise HTTPException(status_code=404, detail="Incident not found")
+    audit(
+        "incident.contained",
+        user=user,
+        resource=incident_id,
+        detail={"actions": result.actions},
+        ip=client_ip(request),
+    )
     return result
 
 
 # ------------------------------------------------------------ attack graph
-@router.get("/attack-graph", dependencies=[DependsRate])
+@router.get("/attack-graph", dependencies=READ)
 def attack_graphs() -> dict[str, Any]:
     graphs = STORE.list_graphs()
     return {"items": graphs, "total": len(graphs)}
 
 
-@router.get("/attack-graph/{incident_id}", dependencies=[DependsRate])
+@router.get("/attack-graph/{incident_id}", dependencies=READ)
 def attack_graph(incident_id: str) -> dict[str, Any]:
     graph = STORE.get_graph(incident_id)
     if not graph:
@@ -181,12 +189,12 @@ def attack_graph(incident_id: str) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------- simulations
-@router.get("/scenarios", dependencies=[DependsRate])
+@router.get("/scenarios", dependencies=READ)
 def scenarios() -> dict[str, Any]:
     return {"items": SCENARIO_META}
 
 
-@router.post("/simulate/{scenario_key}", response_model=SimulationResult, dependencies=[DependsRate])
+@router.post("/simulate/{scenario_key}", response_model=SimulationResult, dependencies=WRITE)
 def simulate(scenario_key: str, body: SimulationRequest | None = None) -> SimulationResult:
     from app.simulator.scenarios import SCENARIOS
 
@@ -202,7 +210,7 @@ def simulate(scenario_key: str, body: SimulationRequest | None = None) -> Simula
 
 
 # --------------------------------------------------------------------- analyze
-@router.post("/analyze", response_model=AnalyzeResponse, dependencies=[DependsRate])
+@router.post("/analyze", response_model=AnalyzeResponse, dependencies=WRITE)
 def analyze_incident(body: AnalyzeRequest) -> AnalyzeResponse:
     inc = STORE.get_incident(body.incident_id)
     if not inc:
@@ -252,41 +260,49 @@ def build_report(incident_id: str) -> dict[str, Any]:
     return report
 
 
-@router.get("/reports/{incident_id}", dependencies=[DependsRate])
+@router.get("/reports/{incident_id}", dependencies=READ)
 def report(incident_id: str) -> dict[str, Any]:
     return build_report(incident_id)
 
 
 # ----------------------------------------------------------------------- demo
-@router.get("/demo", dependencies=[DependsRate])
+@router.get("/demo", dependencies=READ)
 def demo_status() -> dict[str, Any]:
     return DEMO.snapshot()
 
 
-@router.post("/demo/start", dependencies=[DependsRate])
-def demo_start() -> dict[str, Any]:
+@router.post("/demo/start", dependencies=WRITE)
+def demo_start(request: Request, user: dict[str, Any] = Depends(require_role("analyst"))) -> dict[str, Any]:
     ENGINE.seed()
-    return DEMO.start()
+    result = DEMO.start()
+    audit("demo.started", user=user, ip=client_ip(request))
+    return result
 
 
-@router.post("/demo/reset", dependencies=[DependsRate])
-def demo_reset() -> dict[str, Any]:
-    return DEMO.reset()
+@router.post("/demo/reset", dependencies=WRITE)
+def demo_reset(request: Request, user: dict[str, Any] = Depends(require_role("analyst"))) -> dict[str, Any]:
+    result = DEMO.reset()
+    audit("demo.reset", user=user, detail=result, ip=client_ip(request))
+    return result
 
 
-@router.post("/demo/stop", dependencies=[DependsRate])
-def demo_stop() -> dict[str, Any]:
-    return DEMO.stop()
+@router.post("/demo/stop", dependencies=WRITE)
+def demo_stop(request: Request, user: dict[str, Any] = Depends(require_role("analyst"))) -> dict[str, Any]:
+    result = DEMO.stop()
+    audit("demo.stopped", user=user, ip=client_ip(request))
+    return result
 
 
 # ------------------------------------------------------------------- settings
-@router.get("/settings", dependencies=[DependsRate])
+@router.get("/settings", dependencies=READ)
 def public_settings() -> dict[str, Any]:
     """Non-secret runtime configuration exposed to the frontend."""
     return {
         "app": settings.app_name,
         "environment": settings.environment,
         "database": STORE.persistence.mode,
+        "auth_enabled": settings.auth_active,
+        "roles": ["viewer", "analyst", "admin"],
         "demo_mode": True,
         "llm_enabled": settings.llm_enabled,
         "ai_provider": "local-analysis-engine" if not settings.llm_enabled else settings.ai_provider,
@@ -297,9 +313,10 @@ def public_settings() -> dict[str, Any]:
     }
 
 
-@router.post("/reset", dependencies=[DependsRate])
-def reset_sandbox() -> dict[str, Any]:
+@router.post("/reset", dependencies=ADMIN)
+def reset_sandbox(request: Request, user: dict[str, Any] = Depends(require_role("admin"))) -> dict[str, Any]:
     """Full sandbox reset - clears events, incidents and node states."""
     STORE.full_reset()
     ENGINE.seed()
+    audit("sandbox.reset", user=user, ip=client_ip(request))
     return {"status": "reset", "message": "Sandbox restored to baseline state"}

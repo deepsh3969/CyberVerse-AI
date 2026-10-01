@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { BrainCircuit, Loader2, Send, Sparkles } from 'lucide-react'
 import { useApp } from '../context/AppContext'
+import { useAuth } from '../context/AuthContext'
 import { EmptyState, Panel, SectionHeading, SeverityBadge, StatusPill } from '../components/ui'
 import { formatDateTime, riskBand } from '../utils/format'
 
@@ -17,6 +18,7 @@ const QUESTIONS = [
 
 export default function AIAnalyst() {
   const { incidents, actions, offline, pushToast } = useApp()
+  const { canWrite } = useAuth()
   const [params, setParams] = useSearchParams()
   const [question, setQuestion] = useState('')
   const [busy, setBusy] = useState(false)
@@ -30,6 +32,10 @@ export default function AIAnalyst() {
   }, [incident?.id, incident?.analysis])
 
   const runAnalysis = async (q = question) => {
+    if (!canWrite) {
+      pushToast({ type: 'error', title: 'Analyst role required', message: 'Your account has read-only access to the console.' })
+      return
+    }
     if (!incident) return
     setBusy(true)
     const res = await actions.analyze(incident.id, q)
@@ -107,7 +113,7 @@ export default function AIAnalyst() {
                     setQuestion(q)
                     runAnalysis(q)
                   }}
-                  disabled={busy || offline}
+                  disabled={busy || offline || !canWrite}
                   className="rounded-lg border border-white/[0.07] px-3 py-2 text-left text-[12.5px] text-slate-300 transition hover:border-cyber-400/40 hover:text-cyber-300 disabled:opacity-50"
                 >
                   {q}
@@ -127,8 +133,8 @@ export default function AIAnalyst() {
               <button
                 className="btn-primary px-3"
                 onClick={() => runAnalysis()}
-                disabled={busy || offline || !question.trim()}
-                title={offline ? 'Backend offline' : 'Run analysis'}
+                disabled={busy || offline || !question.trim() || !canWrite}
+                title={!canWrite ? 'Analyst role required' : offline ? 'Backend offline' : 'Run analysis'}
               >
                 {busy ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
               </button>
@@ -174,7 +180,7 @@ export default function AIAnalyst() {
               title="No analysis generated yet"
               message="Choose a question on the left to have the AI analyst explain this incident."
               action={
-                <button className="btn-primary text-xs" onClick={() => runAnalysis('What happened?')} disabled={busy || offline}>
+                <button className="btn-primary text-xs" onClick={() => runAnalysis('What happened?')} disabled={busy || offline || !canWrite}>
                   {busy ? <Loader2 size={14} className="animate-spin" /> : <BrainCircuit size={14} />} Analyse incident
                 </button>
               }
