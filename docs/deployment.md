@@ -1,88 +1,89 @@
 # Deployment
 
-## 1. Frontend → Vercel
+## What is deployed
 
-1. Push the repository to GitHub.
-2. Vercel → **Add New → Project** → import `CyberVerse-AI`.
-3. Set **Root Directory** to `frontend` (Settings → General → Root Directory).
-   Framework preset **Vite** is auto-detected; otherwise set:
-   - Build command: `npm run build`
-   - Output directory: `dist`
-4. Environment variables → add `VITE_API_URL = https://<backend-host>` (no trailing slash).
-5. Deploy. `frontend/vercel.json` supplies SPA rewrites, asset caching and security headers.
-6. Re-deploy after changing env vars (they are inlined at build time).
+A **single Vercel project** (framework preset: FastAPI) serves both tiers from one origin:
 
-Local equivalents:
+```
+https://cyberverse-ai.vercel.app
+├── /                → React landing page (frontend/dist/index.html)
+├── /app/*           → command center (SPA fallback: index.html)
+├── /assets/*        → hashed JS/CSS bundles
+└── /api/*           → FastAPI (api/index.py → backend/app/main.py)
+```
+
+- Repository: https://github.com/deepsh3969/CyberVerse-AI
+- Live app: https://cyberverse-ai.vercel.app
+- The GitHub repo is connected to Vercel Git, so every push to `main` triggers a production deployment.
+
+## Configuration
+
+| File | Purpose |
+| --- | --- |
+| `vercel.json` | `installCommand` = npm deps + `pip install -r requirements.txt`; `buildCommand` = `npm run build --prefix frontend`; `outputDirectory` = `frontend/dist`; `functions["api/index.py"].maxDuration` = 60; security/caching headers |
+| `pyproject.toml` | `tool.vercel.entrypoint = "api.index:app"` |
+| `api/index.py` | Serverless wrapper: puts `backend/` on `sys.path`, seeds the engine, repairs a runtime that strips the `/api` prefix, exports the ASGI app |
+| `requirements.txt` | Lean serverless dependency set (no pandas/uvicorn/pytest) |
+| `.vercelignore` | Keeps `.git`, `.venv`, `node_modules`, `dist`, model artifacts out of the upload |
+| `backend/app/main.py` | `app.frontend("/", directory="frontend/dist", fallback="index.html")` — API routes win, navigation requests fall back to the SPA shell |
+
+`frontend/vercel.json` is only used if you deploy the frontend on its own (root directory `frontend`).
+
+## Environment variables
+
+None are required for the default demo (same-origin API). Optional, set in Vercel → Project → Settings →
+Environment Variables:
+
+| Name | Effect |
+| --- | --- |
+| `MONGODB_URI` / `MONGODB_DB` | Persist telemetry and incidents in MongoDB; otherwise in-memory demo mode |
+| `AI_API_KEY` / `AI_PROVIDER` / `AI_API_BASE` / `AI_MODEL` | External LLM for the AI analyst (local engine is the default) |
+| `CORS_ORIGINS` | Only needed if you split the frontend onto another domain |
+| `RATE_LIMIT_PER_MINUTE` | Per-client request budget |
+
+Build-time variables (`VITE_*`) are inlined at build; after changing one, redeploy.
+
+## Deploying
 
 ```bash
-cd frontend
-npm install
-npm run build      # must complete without errors
-npm run preview    # sanity-check the production bundle
+vercel link --project cyberverse-ai   # first time only
+vercel deploy --prod                  # manual
+git push origin main                  # or via the connected GitHub repo
 ```
 
-## 2. Backend → a Python host
+## Alternative: split hosting
 
-FastAPI runs as a long-lived process with scikit-learn in memory, so host it on a container/PaaS
-service rather than Vercel's default serverless functions.
+**Backend** on Render / Railway / Fly.io:
 
-**Render (example)**
+```
+Root directory: backend
+Build:  pip install -r requirements.txt
+Start:  uvicorn app.main:app --host 0.0.0.0 --port $PORT
+```
 
-| Field | Value |
+**Frontend** anywhere static (Vercel, Netlify, GitHub Pages) with
+`VITE_API_URL=https://<backend-host>` set before `npm run build`, and
+`CORS_ORIGINS=https://<frontend-host>` on the backend.
+
+## Validation checklist
+
+| Check | How |
 | --- | --- |
-| Root directory | `backend` |
-| Build command | `pip install -r requirements.txt` |
-| Start command | `uvicorn app.main:app --host 0.0.0.0 --port $PORT` |
-| Health check path | `/api/health` |
-
-**Railway / Fly.io / Cloud Run** — same shape: install requirements, run uvicorn, expose `$PORT`.
-
-Environment variables to set on the backend host:
-
-```
-ENVIRONMENT=production
-CORS_ORIGINS=https://<your-vercel-domain>
-RATE_LIMIT_PER_MINUTE=240
-# optional
-MONGODB_URI=...
-AI_PROVIDER=openai
-AI_API_KEY=...
-AI_MODEL=gpt-4o-mini
-```
-
-Verify after deploy:
-
-```bash
-curl https://<backend-host>/api/health
-curl https://<backend-host>/api/dashboard
-curl -X POST https://<backend-host>/api/simulate/brute-force -H 'content-type: application/json' -d '{}'
-```
-
-## 3. Connect the two
-
-1. Set `VITE_API_URL=https://<backend-host>` on Vercel and redeploy the frontend.
-2. Set `CORS_ORIGINS=https://<vercel-domain>` on the backend and restart it.
-3. Open the Vercel URL → header must show **LIVE** and the dashboard must show live counters.
-
-## 4. Validation checklist
-
-| Check | Command / action |
-| --- | --- |
-| Frontend builds | `cd frontend && npm install && npm run build` |
-| Frontend tests | `cd frontend && npm run test` |
-| Backend healthy | `GET /api/health` → `status: ok` |
-| Backend tests | `cd backend && python -m pytest tests -q` |
-| Simulation | `POST /api/simulate/data-exfiltration` → threat + incident |
-| Detection | Threat contains `risk_score`, `confidence`, `evidence` |
+| Landing page | `GET /` → `200 text/html` |
+| Deep link | `GET /app/incidents` → `200 text/html` (SPA fallback) |
+| API alive | `GET /api/health` → `{"status":"ok", ...}` |
+| Static assets | `GET /assets/<hash>.js` → `200 text/javascript` |
+| Detection | `POST /api/simulate/data-exfiltration` → threat + incident + graph |
 | AI analysis | `POST /api/analyze` → sections + recommendations |
 | Containment | `POST /api/incidents/{id}/contain` → `THREAT CONTAINED` |
-| 3D network | `GET /api/network` → 10 nodes / 14 edges; UI renders |
-| Demo mode | `POST /api/demo/start` → 12 steps advance |
-| Offline fallback | Stop the backend → frontend shows preview banner and still renders |
+| Demo | `POST /api/demo/start` → steps advance; `POST /api/demo/stop` then `POST /api/demo/reset` |
+| Local tests | `backend: python -m pytest tests -q` (20) · `frontend: npm run test` (6) · `npm run build` |
 
-## Notes
+## Operational notes
 
-- The frontend is prepared for Vercel; **the backend is not deployed by this repository** — no backend
-  URL is claimed until you complete step 2.
-- If you deploy only the frontend, the console runs in preview mode using bundled data.
-- Never commit `.env`; use the host's environment variable UI.
+- **State is per function instance.** The demo stores everything in memory; a cold start reseeds the
+  baseline. For a multi-user deployment add `MONGODB_URI` so every instance shares state.
+- **SSE** (`/api/events/stream`) is secondary — the console polls by default, which is the reliable path
+  on serverless.
+- **Rate limiting** is per instance and in-memory.
+- Everything is synthetic: no outbound scanning, exploitation or credential use is performed anywhere.

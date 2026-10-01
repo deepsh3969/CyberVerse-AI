@@ -2,15 +2,29 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 
 from app.api.routes import router
 from app.core.config import settings
 from app.services.engine import ENGINE
+
+
+def _find_dist() -> Path | None:
+    """Locate the built frontend, if one exists (repo layout or CWD)."""
+    repo_root = Path(__file__).resolve().parents[2]
+    for candidate in (
+        repo_root / "frontend" / "dist",
+        Path.cwd() / "frontend" / "dist",
+        Path.cwd() / "dist",
+    ):
+        if candidate.is_dir():
+            return candidate
+    return None
 
 
 @asynccontextmanager
@@ -52,15 +66,49 @@ async def generic_handler(request: Request, exc: Exception) -> JSONResponse:
     )
 
 
-@app.get("/", tags=["meta"])
-def root() -> dict:
-    return {
-        "name": settings.app_name,
-        "tagline": "SEE THE ATTACK. UNDERSTAND THE THREAT. STOP IT.",
-        "docs": "/docs",
-        "health": "/api/health",
-        "mode": "simulated-sandbox",
-    }
+@app.get("/", tags=["meta"], response_model=None)
+def root() -> JSONResponse | HTMLResponse:
+    """Serve the SPA landing page when a build exists, else service metadata."""
+    dist = _find_dist()
+    index = dist / "index.html" if dist else None
+    if index is not None and index.is_file():
+        return HTMLResponse(
+            index.read_text(encoding="utf-8"),
+            headers={"Cache-Control": "public, max-age=60"},
+        )
+    return JSONResponse(
+        {
+            "name": settings.app_name,
+            "tagline": "SEE THE ATTACK. UNDERSTAND THE THREAT. STOP IT.",
+            "docs": "/docs",
+            "health": "/api/health",
+            "mode": "simulated-sandbox",
+        }
+    )
 
 
 app.include_router(router, prefix=settings.api_prefix)
+
+
+def _register_frontend() -> None:
+    """Serve the built SPA (same origin) when a build output is present.
+
+    API path operations always win over frontend files, and unknown
+    navigation requests fall back to ``index.html`` so client-side routes
+    such as ``/app/incidents/INC-1`` work when opened directly.
+    """
+    if not hasattr(app, "frontend"):
+        return
+    dist = _find_dist()
+    if dist is None:
+        return
+    try:
+        relative = dist.relative_to(Path.cwd())
+    except ValueError:
+        directory = str(dist)
+    else:
+        directory = relative.as_posix()
+    app.frontend("/", directory=directory, fallback="index.html", check_dir=False)
+
+
+_register_frontend()

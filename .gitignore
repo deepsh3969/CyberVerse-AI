@@ -4,6 +4,9 @@
 !.env.example
 *.local
 
+# ---- vercel ----
+.vercel/
+
 # ---- node ----
 node_modules/
 frontend/dist/
@@ -39,3 +42,6 @@ Thumbs.db
 *.map
 .cache/
 coverage/
+
+.vercel
+.env*

@@ -33,6 +33,7 @@ class DemoRunner:
     def __init__(self) -> None:
         self.lock = threading.RLock()
         self.thread: Optional[threading.Thread] = None
+        self.stop_event = threading.Event()
         self.state: dict[str, Any] = {
             "state": "idle",
             "step": -1,
@@ -55,6 +56,7 @@ class DemoRunner:
         with self.lock:
             if self.thread and self.thread.is_alive():
                 return self.snapshot()
+            self.stop_event.clear()
             self.state.update(
                 {
                     "state": "running",
@@ -71,6 +73,10 @@ class DemoRunner:
 
     def reset(self) -> dict[str, Any]:
         with self.lock:
+            if self.thread and self.thread.is_alive():
+                # Ask the runner to exit, then wait briefly for it to do so.
+                self.stop_event.set()
+                self.thread.join(timeout=3.0)
             if self.thread and self.thread.is_alive():
                 return {"state": "busy", "message": "Demo still running"}
             STORE.full_reset()
@@ -90,6 +96,7 @@ class DemoRunner:
 
     def stop(self) -> dict[str, Any]:
         with self.lock:
+            self.stop_event.set()
             self.state["state"] = "aborted"
             self.state["label"] = "Demo stopped"
             self.state["detail"] = "Operator stopped the scripted sequence."
@@ -107,19 +114,24 @@ class DemoRunner:
                 }
             )
 
+    def _pause(self, seconds: float) -> bool:
+        """Wait ``seconds``; returns True when a stop/reset was requested."""
+        return self.stop_event.wait(seconds)
+
     def _run(self) -> None:
         try:
-            time.sleep(1.6)
+            if self._pause(1.6):
+                return
             self._set(1)
 
             scan = ENGINE.run_scenario("port-scan", intensity="low")
-            time.sleep(2.4)
-            if self.state.get("state") == "aborted":
+            if self._pause(2.4):
                 return
 
             self._set(2)
             result = ENGINE.run_scenario("brute-force", intensity="normal")
-            time.sleep(2.2)
+            if self._pause(2.2):
+                return
 
             incident = result.incident
             threats = result.threats
@@ -128,21 +140,27 @@ class DemoRunner:
                 return
 
             self._set(3)
-            time.sleep(2.0)
+            if self._pause(2.0):
+                return
             self._set(4)
-            time.sleep(2.0)
+            if self._pause(2.0):
+                return
             self._set(5, incident_id=incident.id)
-            time.sleep(2.0)
+            if self._pause(2.0):
+                return
             self._set(6, incident_id=incident.id)
-            time.sleep(2.0)
+            if self._pause(2.0):
+                return
 
             analysis = analyze(incident, "What happened and why is it dangerous?")
             incident.analysis = analysis
             STORE.add_incident(incident)
             self._set(7, incident_id=incident.id)
-            time.sleep(2.0)
+            if self._pause(2.0):
+                return
             self._set(8, incident_id=incident.id)
-            time.sleep(2.0)
+            if self._pause(2.0):
+                return
             self._set(9, incident_id=incident.id)
 
             # wait for the operator to press CONTAIN THREAT
@@ -151,9 +169,8 @@ class DemoRunner:
                 current = STORE.get_incident(incident.id)
                 if current and current.status.value in ("CONTAINED", "RESOLVED"):
                     break
-                if self.state.get("state") == "aborted":
+                if self._pause(0.7):
                     return
-                time.sleep(0.7)
             else:
                 with self.lock:
                     self.state["state"] = "timeout"
@@ -162,9 +179,11 @@ class DemoRunner:
                 return
 
             self._set(10, incident_id=incident.id)
-            time.sleep(1.8)
+            if self._pause(1.8):
+                return
             self._set(11, incident_id=incident.id)
-            time.sleep(1.4)
+            if self._pause(1.4):
+                return
             with self.lock:
                 self.state["state"] = "complete"
                 self.state["label"] = "Demo complete"

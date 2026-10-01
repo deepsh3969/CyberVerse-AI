@@ -10,6 +10,8 @@ path in 3D, and lets an analyst contain the threat — all inside a defensive sa
 
 ![status](https://img.shields.io/badge/status-working%20prototype-blue) ![frontend](https://img.shields.io/badge/frontend-React%20%2B%20Three.js-38d6f5) ![backend](https://img.shields.io/badge/backend-FastAPI%20%2B%20scikit--learn-ff3b5c)
 
+**Live demo:** https://cyberverse-ai.vercel.app · **Source:** https://github.com/deepsh3969/CyberVerse-AI
+
 ---
 
 ## Problem statement
@@ -224,30 +226,48 @@ Everything is repeatable; `POST /api/demo/reset` restores baseline telemetry.
 
 ## Deployment
 
-### Frontend — Vercel
+### Live (single Vercel project)
 
-1. Push the repository to GitHub.
-2. Vercel → **Add New Project** → import the repo → set **Root Directory** to `frontend`
-   (framework preset: Vite, build `npm run build`, output `dist`).
-3. Add env var `VITE_API_URL=https://<your-backend-host>`.
-4. Deploy. `frontend/vercel.json` already provides SPA rewrites.
+| | |
+| --- | --- |
+| **App** | https://cyberverse-ai.vercel.app |
+| **Source** | https://github.com/deepsh3969/CyberVerse-AI (connected to Vercel Git — pushing to `main` redeploys) |
 
-### Backend
+The repository deploys as **one Vercel project** using the FastAPI framework preset, so the console and the
+API share a single origin — no `VITE_API_URL` and no CORS configuration:
 
-FastAPI cannot run on Vercel's default serverless functions in this configuration (long-running process +
-scikit-learn), so host it on a Python platform, e.g. **Render / Railway / Fly.io / Hugging Face Spaces**:
+| Piece | Configuration |
+| --- | --- |
+| Frontend build | `vercel.json` → `installCommand` installs npm deps **and** `pip install -r requirements.txt`; `buildCommand` runs `npm run build --prefix frontend` into `frontend/dist` |
+| Python entrypoint | `pyproject.toml` → `tool.vercel.entrypoint = "api.index:app"` (wraps `backend/app/main.py`) |
+| SPA + API routing | `app.frontend()` in `backend/app/main.py` serves `frontend/dist` with an `index.html` fallback; API path operations always win |
+| Function budget | `vercel.json` → `functions["api/index.py"].maxDuration = 60` |
+| State | in-memory (demo mode); add `MONGODB_URI` in project settings for persistence |
+
+Verified live: `/` (landing), `/app/*` (console), `/api/health`, static assets, `POST /api/simulate/*`,
+`POST /api/analyze`, `POST /api/incidents/{id}/contain`, `/api/demo/*`.
+
+### Deploy your own copy
 
 ```bash
-# Render web service
+# with the Vercel CLI (already authenticated)
+vercel link --project cyberverse-ai     # or any project name
+vercel deploy --prod
+```
+or import the GitHub repository in the Vercel dashboard (framework: FastAPI, no extra settings needed).
+
+### Alternative: separate frontend / backend hosts
+
+If you prefer split hosting, build the frontend anywhere static and point it at a Python host:
+
+```bash
+# backend on Render / Railway / Fly.io
 Root directory: backend
 Build:  pip install -r requirements.txt
 Start:  uvicorn app.main:app --host 0.0.0.0 --port $PORT
 ```
-Set `CORS_ORIGINS=https://<your-vercel-domain>` on the backend, then set the same origin in
-`VITE_API_URL` on Vercel. See [`docs/deployment.md`](docs/deployment.md).
-
-> The frontend is configured for Vercel; the backend is **not** deployed from this repository by default —
-> no backend URL is claimed here.
+Then set `VITE_API_URL=https://<backend-host>` before building the frontend and allow the frontend origin
+with `CORS_ORIGINS` on the backend. Details in [`docs/deployment.md`](docs/deployment.md).
 
 ## Screenshots
 

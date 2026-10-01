@@ -6,7 +6,8 @@ All bodies are JSON. Errors return `{ "detail": string }`.
 ## Meta
 
 ### `GET /`
-Service descriptor.
+Service descriptor (`{"name": ..., "docs": "/docs", ...}`) when no frontend build is present; otherwise it
+serves the SPA landing page (`index.html`).
 
 ### `GET /api/health`
 ```json
